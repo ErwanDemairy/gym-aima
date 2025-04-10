@@ -1,101 +1,168 @@
 import sys
-from contextlib import closing
-
+import io
 import numpy as np
-from six import StringIO, b
+import gymnasium as gym
+from gymnasium import spaces, utils
 
-from gym import utils
-from gym.envs.toy_text import discrete
+LEFT, DOWN, RIGHT, UP = 0, 1, 2, 3
 
-LEFT, DOWN, RIGHT, UP = range(4)
+class AIMAEnv(gym.Env):
 
+    metadata = {
+        "render_modes": ["human", "ansi"],  # 렌더링 모드
+        "render_fps": 4
+    }
 
-class AIMAEnv(discrete.DiscreteEnv):
+    def __init__(
+        self,
+        render_mode=None,
+        map_name="3x4",
+        noise=0.2,
+        living_rew=0.0,
+        sink=False
+    ):
 
-    metadata = {'render.modes': ['human', 'ansi']}
+        self.render_mode = render_mode
+        self.map_name = map_name
+        self.noise = noise
+        self.living_rew = living_rew
+        self.sink = sink
 
-    def __init__(self, map_name="3x4", noise=0.2, living_rew=0.0, sink=False):
+        # 맵 정의
         desc = [
             "FFFG",
             "FWFH",
             "SFFF",
         ]
-        self.desc = desc = np.asarray(desc, dtype='c')
-        self.nrow, self.ncol = nrow, ncol = desc.shape
+        self.desc = np.asarray(desc, dtype="c")
+        self.nrow, self.ncol = self.desc.shape
+        self.nS = self.nrow * self.ncol  # 총 상태 수
+        self.nA = 4                      # 행동 수
 
-        nA = 4
-        nS = nrow * ncol
+        self.action_space = spaces.Discrete(self.nA)
+        self.observation_space = spaces.Discrete(self.nS)
 
-        isd = np.array(desc == b'S').astype('float64').ravel()
+        isd = np.array(self.desc == b'S').astype("float64").ravel()
         isd /= isd.sum()
+        self.isd = isd
 
-        P = {s : {a : [] for a in range(nA)} for s in range(nS)}
+        P = {s: {a: [] for a in range(self.nA)} for s in range(self.nS)}
 
         def to_s(row, col):
-            return row*ncol + col
+            return row * self.ncol + col
 
         def inc(row, col, a):
             if a == LEFT:
-                col = max(col-1, 0)
+                col = max(col - 1, 0)
             elif a == DOWN:
-                row = min(row+1, nrow-1)
+                row = min(row + 1, self.nrow - 1)
             elif a == RIGHT:
-                col = min(col+1, ncol-1)
+                col = min(col + 1, self.ncol - 1)
             elif a == UP:
-                row = max(row-1, 0)
+                row = max(row - 1, 0)
             return (row, col)
 
-        for row in range(nrow):
-            for col in range(ncol):
+        for row in range(self.nrow):
+            for col in range(self.ncol):
                 s = to_s(row, col)
-                for a in range(4):
-                    li = P[s][a]
-                    letter = desc[row, col]
-                    if sink:
+                letter = self.desc[row, col]
+                for a in range(self.nA):
+                    transitions = P[s][a]
+
+                    if self.sink:
                         if letter in b'W':
-                            li.append((1.0, s, 0, True))
+                            transitions.append((1.0, s, 0, True))
                         elif letter in b'G':
-                            li.append((1.0, 5, 1, True))
+                            transitions.append((1.0, 5, 1, True))
                         elif letter in b'H':
-                            li.append((1.0, 5, -1, True))
+                            transitions.append((1.0, 5, -1, True))
                         else:
-                            for b in [(a-1) % 4, a, (a+1) % 4]:
-                                newrow, newcol = inc(row, col, b)
-                                newstate = to_s(newrow, newcol)
-                                newletter = desc[newrow, newcol]
-                                newstate = s if newletter in b'W' else newstate
-                                rew = living_rew
-                                li.append((np.round(1.0-noise if a == b else noise/2., 2), newstate, rew, False))
+                            for b_act in [(a - 1) % 4, a, (a + 1) % 4]:
+                                new_row, new_col = inc(row, col, b_act)
+                                new_state = to_s(new_row, new_col)
+                                new_letter = self.desc[new_row, new_col]
+                                if new_letter in b'W':
+                                    new_state = s
+                                prob = (
+                                    1.0 - self.noise
+                                    if b_act == a
+                                    else self.noise / 2.0
+                                )
+                                prob = float(np.round(prob, 2))
+                                rew = self.living_rew
+                                transitions.append((prob, new_state, rew, False))
+
                     else:
                         if letter in b'GHW':
-                            li.append((1.0, s, 0, True))
+                            transitions.append((1.0, s, 0, True))
                         else:
-                            for b in [(a-1) % 4, a, (a+1) % 4]:
-                                newrow, newcol = inc(row, col, b)
-                                newstate = to_s(newrow, newcol)
-                                newletter = desc[newrow, newcol]
-                                newstate = s if newletter in b'W' else newstate
-                                done = bytes(newletter) in b'GH'
-                                rew = living_rew
-                                rew += 1.0 if newletter == b'G' else -1.0 if newletter == b'H' else 0
-                                li.append((np.round(1.0-noise if a == b else noise/2., 2), newstate, rew, done))
+                            for b_act in [(a - 1) % 4, a, (a + 1) % 4]:
+                                new_row, new_col = inc(row, col, b_act)
+                                new_state = to_s(new_row, new_col)
+                                new_letter = self.desc[new_row, new_col]
+                                if new_letter in b'W':
+                                    new_state = s
+                                done = (new_letter in b'GH')
+                                prob = (
+                                    1.0 - self.noise
+                                    if b_act == a
+                                    else self.noise / 2.0
+                                )
+                                prob = float(np.round(prob, 2))
 
-        super(AIMAEnv, self).__init__(nS, nA, P, isd)
+                                rew = self.living_rew
+                                if new_letter == b'G':
+                                    rew += 1.0
+                                elif new_letter == b'H':
+                                    rew -= 1.0
 
-    def render(self, mode='human'):
-        outfile = StringIO() if mode == 'ansi' else sys.stdout
+                                transitions.append((prob, new_state, rew, done))
 
-        row, col = self.s // self.ncol, self.s % self.ncol
+        self.P = P
+
+        self.s = None
+        self.lastaction = None
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.s = np.random.choice(self.nS, p=self.isd)
+        self.lastaction = None
+        return self.s, {}
+
+    def step(self, action):
+        transitions = self.P[self.s][action]
+
+        probs = [t[0] for t in transitions]
+        idx = np.random.choice(len(transitions), p=probs)
+        p, s_next, reward, done = transitions[idx]
+
+        self.s = s_next
+        self.lastaction = action
+
+        return s_next, reward, done, False, {}
+
+    def render(self):
+        if self.render_mode == "ansi":
+            outfile = io.StringIO()
+        else:
+            outfile = sys.stdout
+
+        row, col = divmod(self.s, self.ncol)
+
         desc = self.desc.tolist()
-        desc = [[c.decode('utf-8') for c in line] for line in desc]
+        desc = [[c.decode("utf-8") for c in line] for line in desc]
+
         desc[row][col] = utils.colorize(desc[row][col], "red", highlight=True)
+
         if self.lastaction is not None:
-            outfile.write("  ({})\n".format(["Left", "Down", "Right", "Up"][self.lastaction]))
+            actions = ["Left", "Down", "Right", "Up"]
+            outfile.write(f"  ({actions[self.lastaction]})\n")
         else:
             outfile.write("\n")
-        outfile.write("\n".join(''.join(line) for line in desc)+"\n")
 
-        if mode != 'human':
-            with closing(outfile):
-                return outfile.getvalue()
+        outfile.write("\n".join("".join(line) for line in desc) + "\n")
 
+        if self.render_mode == "ansi":
+            return outfile.getvalue()
+        else:
+            return None
