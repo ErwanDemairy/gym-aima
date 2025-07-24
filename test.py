@@ -1,27 +1,3 @@
-# gym-aima
-
-Package implementing the Gridworld environment that appears in
-Russell & Norvig's book. It registers environments to
-reproduce the results of the book and also the results
-in Berkeley's AI lectures by Abbeel & Klein.
-
-## Installation
-
-```bash
-git clone https://github.com/mimoralea/gym-aima.git
-cd gym-aima
-pip install .
-```
-
-or:
-
-```bash
-pip install git+https://github.com/mimoralea/gym-aima#egg=gym-aima
-```
-
-## Use
-
-```python
 import gymnasium as gym
 import gym_aima, numpy as np
 def value_iteration(P, gamma=0.99, theta = 1e-10):
@@ -62,4 +38,3 @@ env = gym.make('AbbeelKleinGridworld-v0')
 V_best_v, pi_best_v = value_iteration(env.P, gamma=0.9)
 print(V_best_v)
 print_policy(pi_best_v, env.P)
-```
